@@ -1,0 +1,11 @@
+# Build output
+build/
+cmake-build-*/
+
+# IDE state (all build settings live in CMakeLists.txt and CMakePresets.json)
+.idea/
+.vs/
+.vscode/
+
+# Personal, machine-specific presets
+CMakeUserPresets.json
