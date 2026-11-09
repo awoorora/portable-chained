@@ -123,14 +123,14 @@ int main(int argc, char** argv)
     if (argc < 2)
     {
         fprintf(stderr, "Give me a GPU index in arguments\n");
-        return 0;
+        return 1;
     }
 
-    char *p;
-    uint32_t physDevChosen = strtol(argv[1], &p, 10);;
-    if(physDevChosen >= devicesCount)
+    char* p;
+    uint32_t physDevChosen = strtol(argv[1], &p, 10);
+    if (p == argv[1] || *p != '\0' || physDevChosen >= devicesCount)
     {
-        fprintf(stderr, "In the arguments choose a GPU index between 0 and %u.", devicesCount);
+        fprintf(stderr, "In the arguments choose a GPU index between 0 and %u.\n", devicesCount - 1);
         return 1;
     }
 
@@ -348,9 +348,7 @@ int main(int argc, char** argv)
     VkCommandPoolCreateInfo commandPoolCreateInfo = {};
     commandPoolCreateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     commandPoolCreateInfo.queueFamilyIndex = computeFamily;
-    // no flags mentioned, picked the one that sounds better
-    // commandPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT; // command pools are rerecorded with new commands very often
-    commandPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT; // allow command buffers to be rerecorded individually
+    commandPoolCreateInfo.flags = 0; // recorded once, resubmitted every run: no reset flag needed
 
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VK_CHECK(vkCreateCommandPool(device, &commandPoolCreateInfo, nullptr, &commandPool));

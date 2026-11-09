@@ -59,6 +59,30 @@ int main(int argc, char** argv)
     const char* validationLayers[] = {"VK_LAYER_KHRONOS_validation"};
     instanceCreateInfo.enabledLayerCount = 1;
     instanceCreateInfo.ppEnabledLayerNames = validationLayers;
+
+    // Synchronization validation, plus tracking of what the shader reads and writes through descriptors
+    const VkBool32 settingOn = VK_TRUE;
+    VkLayerSettingEXT syncvalSettings[2] = {};
+    syncvalSettings[0].pLayerName = "VK_LAYER_KHRONOS_validation";
+    syncvalSettings[0].pSettingName = "validate_sync";
+    syncvalSettings[0].type = VK_LAYER_SETTING_TYPE_BOOL32_EXT;
+    syncvalSettings[0].valueCount = 1;
+    syncvalSettings[0].pValues = &settingOn;
+    syncvalSettings[1].pLayerName = "VK_LAYER_KHRONOS_validation";
+    syncvalSettings[1].pSettingName = "syncval_shader_accesses_heuristic";
+    syncvalSettings[1].type = VK_LAYER_SETTING_TYPE_BOOL32_EXT;
+    syncvalSettings[1].valueCount = 1;
+    syncvalSettings[1].pValues = &settingOn;
+
+    VkLayerSettingsCreateInfoEXT layerSettings = {};
+    layerSettings.sType = VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT;
+    layerSettings.settingCount = 2;
+    layerSettings.pSettings = syncvalSettings;
+
+    const char* instanceExtensions[] = {VK_EXT_LAYER_SETTINGS_EXTENSION_NAME};
+    instanceCreateInfo.enabledExtensionCount = 1;
+    instanceCreateInfo.ppEnabledExtensionNames = instanceExtensions;
+    instanceCreateInfo.pNext = &layerSettings;
 #endif
 
     VkInstance instance = VK_NULL_HANDLE;
@@ -123,14 +147,14 @@ int main(int argc, char** argv)
     if (argc < 2)
     {
         fprintf(stderr, "Give me a GPU index in arguments\n");
-        return 0;
+        return 1;
     }
 
     char* p;
-    uint32_t physDevChosen = strtol(argv[1], &p, 10);;
-    if (physDevChosen >= devicesCount)
+    uint32_t physDevChosen = strtol(argv[1], &p, 10);
+    if (p == argv[1] || *p != '\0' || physDevChosen >= devicesCount)
     {
-        fprintf(stderr, "In the arguments choose a GPU index between 0 and %u.", devicesCount);
+        fprintf(stderr, "In the arguments choose a GPU index between 0 and %u.\n", devicesCount - 1);
         return 1;
     }
 
@@ -203,12 +227,19 @@ int main(int argc, char** argv)
     allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
     allocCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
+    VmaAllocationCreateInfo allocCreateInfoDevice = {};
+    allocCreateInfoDevice.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+
+    VmaAllocationCreateInfo allocCreateInfoStaging = {};
+    allocCreateInfoStaging.usage = VMA_MEMORY_USAGE_AUTO;
+    allocCreateInfoStaging.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
     // buffer definitions
     constexpr uint32_t N = (1u << 22) + 13;
 
     VkBufferCreateInfo bufferInfoIn = {};
     bufferInfoIn.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfoIn.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    bufferInfoIn.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     bufferInfoIn.size = sizeof(uint32_t) * N;
 
     VkBufferCreateInfo bufferInfoRes = {};
@@ -216,19 +247,23 @@ int main(int argc, char** argv)
     bufferInfoRes.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     bufferInfoRes.size = sizeof(uint32_t);
 
-    VkBuffer bufferIn, bufferRes;
-    VmaAllocation allocationIn, allocationRes;
-    VmaAllocationInfo allocationInfoIn, allocationInfoRes; // these hold the pointers to mapped memory
+    VkBufferCreateInfo bufferInfoStaging = {};
+    bufferInfoStaging.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfoStaging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufferInfoStaging.size = sizeof(uint32_t) * N;
+
+    VkBuffer bufferIn, bufferRes, bufferStaging;
+    VmaAllocation allocationIn, allocationRes, allocationStaging;
+    VmaAllocationInfo allocationInfoIn, allocationInfoRes, allocationInfoStaging; // these hold the pointers to mapped memory
 
     // creating the buffers and allocating memory in one shot
-    VK_CHECK(vmaCreateBuffer(allocator, &bufferInfoIn, &allocCreateInfo, &bufferIn, &allocationIn, &allocationInfoIn));
-    VK_CHECK(
-        vmaCreateBuffer(allocator, &bufferInfoRes, &allocCreateInfo, &bufferRes, &allocationRes, &allocationInfoRes));
-
+    VK_CHECK(vmaCreateBuffer(allocator, &bufferInfoIn, &allocCreateInfoDevice, &bufferIn, &allocationIn, &allocationInfoIn));
+    VK_CHECK(vmaCreateBuffer(allocator, &bufferInfoRes, &allocCreateInfo, &bufferRes, &allocationRes, &allocationInfoRes));
+    VK_CHECK(vmaCreateBuffer(allocator, &bufferInfoStaging, &allocCreateInfoStaging, &bufferStaging, &allocationStaging, &allocationInfoStaging));
 
     // accessing the data
 
-    void* cpuDataIn = allocationInfoIn.pMappedData;
+    void* cpuDataIn = allocationInfoStaging.pMappedData; // previously was allocationInfoIn
     uint32_t* dataIn = static_cast<uint32_t*>(cpuDataIn);
     void* cpuDataRes = allocationInfoRes.pMappedData;
     uint32_t* dataRes = static_cast<uint32_t*>(cpuDataRes);
@@ -242,7 +277,7 @@ int main(int argc, char** argv)
     }
 
     // Flush makes CPU writes visible to the GPU
-    VK_CHECK(vmaFlushAllocation(allocator, allocationIn, 0, VK_WHOLE_SIZE));
+    VK_CHECK(vmaFlushAllocation(allocator, allocationStaging, 0, VK_WHOLE_SIZE));
     VK_CHECK(vmaFlushAllocation(allocator, allocationRes, 0, VK_WHOLE_SIZE));
 
     printf("dataIn[0]: 0x%x\n", dataIn[0]);
@@ -397,10 +432,7 @@ int main(int argc, char** argv)
     VkCommandPoolCreateInfo commandPoolCreateInfo = {};
     commandPoolCreateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     commandPoolCreateInfo.queueFamilyIndex = computeFamily;
-    // no flags mentioned, picked the one that sounds better
-    // commandPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT; // command pools are rerecorded with new commands very often
-    commandPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-    // allow command buffers to be rerecorded individually
+    commandPoolCreateInfo.flags = 0; // recorded once, resubmitted every run: no reset flag needed
 
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VK_CHECK(vkCreateCommandPool(device, &commandPoolCreateInfo, nullptr, &commandPool));
@@ -441,6 +473,20 @@ int main(int argc, char** argv)
     VK_CHECK(vkBeginCommandBuffer(commandBuffer, &commandBufferBeginInfo));
 
     vkCmdResetQueryPool(commandBuffer, queryPool, 0, 2);
+
+    // next two lines' jobs: recording the copy
+
+    VkBufferCopy region = {0, 0, sizeof(uint32_t) * N};
+    vkCmdCopyBuffer(commandBuffer, bufferStaging, bufferIn, 1, &region);
+
+    // new barrier here
+
+    VkMemoryBarrier copyToShader = {};
+    copyToShader.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    copyToShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    copyToShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0, 1, &copyToShader, 0, nullptr, 0, nullptr);
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0,
@@ -527,6 +573,8 @@ int main(int argc, char** argv)
     vmaDestroyBuffer(allocator, bufferIn, allocationIn);
 
     vmaDestroyBuffer(allocator, bufferRes, allocationRes);
+
+    vmaDestroyBuffer(allocator, bufferStaging, allocationStaging);
 
     vmaDestroyAllocator(allocator);
 
