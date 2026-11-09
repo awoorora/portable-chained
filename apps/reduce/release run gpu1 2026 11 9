@@ -1,0 +1,32 @@
+"D:\003 Projects\thesis\portable-chained\build\release\bin\reduce.exe" 1
+
+Vulkan loader: 1.4.363
+Embedded SPIR-V: 340 words
+Physical Devices: 2
+
+GPU 0: Intel(R) UHD Graphics (integrated, vendor 0x8086, Vulkan 1.4.323)
+GPU 1: NVIDIA GeForce RTX 4050 Laptop GPU (discrete, vendor 0x10de, Vulkan 1.4.357)
+
+GPU id chosen: 1
+Found a queue family capable of computing in gpu 1 and at index 0
+Got the queue and made the device
+dataIn[0]: 0x0
+dataRes[0]: 0x0
+Shader module created (1360 bytes)
+Compute pipeline created
+Descriptor set points at the buffer
+timestampLimit = 1.000000
+timestampValidBits = 64
+Expected: 52428878
+Run  0: 1.378 ms, 12.2 GB/s | Got: 52428878
+Run  1: 1.406 ms, 11.9 GB/s | Got: 52428878
+Run  2: 1.347 ms, 12.5 GB/s | Got: 52428878
+Run  3: 1.322 ms, 12.7 GB/s | Got: 52428878
+Run  4: 1.318 ms, 12.7 GB/s | Got: 52428878
+Run  5: 1.319 ms, 12.7 GB/s | Got: 52428878
+Run  6: 1.372 ms, 12.2 GB/s | Got: 52428878
+Run  7: 1.317 ms, 12.7 GB/s | Got: 52428878
+Run  8: 1.440 ms, 11.7 GB/s | Got: 52428878
+Run  9: 1.402 ms, 12.0 GB/s | Got: 52428878
+
+Process finished with exit code 0
