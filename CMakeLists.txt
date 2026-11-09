@@ -96,3 +96,4 @@ endfunction()
 
 # ---------------------------------------------------------------------------
 add_subdirectory(apps/hello)
+add_subdirectory(apps/reduce)
