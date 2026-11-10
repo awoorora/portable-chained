@@ -424,6 +424,11 @@ int main(int argc, char** argv)
         }
     };
 
+    // VkBuffer bufferResDev; VmaAllocation allocationResDev;
+    // VK_CHECK(vmaCreateBuffer(allocator, &bufferInfoRes, &allocCreateInfoDevice,
+    //                          &bufferResDev, &allocationResDev, nullptr));
+    // descriptorBufferInfo[1].buffer = bufferResDev;
+
     vkUpdateDescriptorSets(device, 2, &descriptorWrite[0], 0, nullptr); // 1 write, 0 copies
     printf("Descriptor set points at the buffer\n");
 
@@ -432,19 +437,57 @@ int main(int argc, char** argv)
     VkCommandPoolCreateInfo commandPoolCreateInfo = {};
     commandPoolCreateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     commandPoolCreateInfo.queueFamilyIndex = computeFamily;
-    commandPoolCreateInfo.flags = 0; // recorded once, resubmitted every run: no reset flag needed
+    commandPoolCreateInfo.flags = 0; // each command buffer is recorded exactly once: no reset flag needed
 
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VK_CHECK(vkCreateCommandPool(device, &commandPoolCreateInfo, nullptr, &commandPool));
 
+    // Two command buffers from the same pool:
+    // [0] the upload, submitted once; [1] the timed dispatch, resubmitted every run.
     VkCommandBufferAllocateInfo commandBufferAllocateInfo = {};
     commandBufferAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     commandBufferAllocateInfo.commandPool = commandPool;
     commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    commandBufferAllocateInfo.commandBufferCount = 1;
+    commandBufferAllocateInfo.commandBufferCount = 2;
 
-    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
-    VK_CHECK(vkAllocateCommandBuffers(device, &commandBufferAllocateInfo, &commandBuffer));
+    VkCommandBuffer commandBuffers[2] = {};
+    VK_CHECK(vkAllocateCommandBuffers(device, &commandBufferAllocateInfo, commandBuffers));
+    VkCommandBuffer uploadCommandBuffer = commandBuffers[0];
+    VkCommandBuffer commandBuffer = commandBuffers[1]; // the timed one
+
+    // Created unsignaled. The upload uses it first, then every run resets and reuses it.
+    VkFenceCreateInfo fenceCreateInfo = {};
+    fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+
+    VkFence fence = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateFence(device, &fenceCreateInfo, nullptr, &fence));
+
+    // Upload: staging -> bufferIn; once
+
+    VkCommandBufferBeginInfo uploadBeginInfo = {};
+    uploadBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    uploadBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT; // submitted once, never again
+
+    VK_CHECK(vkBeginCommandBuffer(uploadCommandBuffer, &uploadBeginInfo));
+    VkBufferCopy region = {0, 0, sizeof(uint32_t) * N};
+    vkCmdCopyBuffer(uploadCommandBuffer, bufferStaging, bufferIn, 1, &region);
+    VK_CHECK(vkEndCommandBuffer(uploadCommandBuffer));
+
+    VkSubmitInfo uploadSubmitInfo = {};
+    uploadSubmitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    uploadSubmitInfo.commandBufferCount = 1;
+    uploadSubmitInfo.pCommandBuffers = &uploadCommandBuffer;
+
+    // Two different jobs, two different mechanisms:
+    // - This host wait is for the MEASUREMENT: the upload is finished before the
+    //   first timed submit, so nothing earlier is still running when ts[0] is taken.
+    // - The barrier at the top of the timed command buffer is for CORRECTNESS:
+    //   it orders the copy's writes before the shader's reads on the GPU.
+    VK_CHECK(vkQueueSubmit(queue, 1, &uploadSubmitInfo, fence));
+    VK_CHECK(vkWaitForFences(device, 1, &fence, VK_TRUE, 5000000000));
+    printf("Input uploaded\n");
+
+    // Timed command buffer: only the dispatch between the timestamps
 
     VkCommandBufferBeginInfo commandBufferBeginInfo = {};
     commandBufferBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -474,13 +517,10 @@ int main(int argc, char** argv)
 
     vkCmdResetQueryPool(commandBuffer, queryPool, 0, 2);
 
-    // next two lines' jobs: recording the copy
-
-    VkBufferCopy region = {0, 0, sizeof(uint32_t) * N};
-    vkCmdCopyBuffer(commandBuffer, bufferStaging, bufferIn, 1, &region);
-
-    // new barrier here
-
+    // The copy is in another submission now, but submission order runs across
+    // command buffers and vkQueueSubmit calls on the same queue. So this
+    // barrier's first scope ("earlier in submission order") still reaches back
+    // to the upload's copy. On runs 1..9 there is nothing left for it to wait on.
     VkMemoryBarrier copyToShader = {};
     copyToShader.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
     copyToShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -492,6 +532,8 @@ int main(int argc, char** argv)
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0,
                             nullptr);
 
+    // Every earlier submission has finished before this one is submitted (the host
+    // waited on its fence), so TOP_OF_PIPE has nothing to run ahead of.
     vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPool, 0);
     vkCmdDispatch(commandBuffer, (N + 255) / 256, 1, 1);
     vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, 1);
@@ -507,12 +549,6 @@ int main(int argc, char** argv)
 
     VK_CHECK(vkEndCommandBuffer(commandBuffer));
 
-    VkFenceCreateInfo fenceCreateInfo = {};
-    fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-
-    VkFence fence = VK_NULL_HANDLE;
-    VK_CHECK(vkCreateFence(device, &fenceCreateInfo, nullptr, &fence));
-
     VkSubmitInfo submitInfo = {};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
@@ -524,12 +560,17 @@ int main(int argc, char** argv)
 
     printf("Expected: %u\n", dataExpected);
 
+    VkMemoryPropertyFlags resFlags = 0;
+    vmaGetAllocationMemoryProperties(allocator, allocationRes, &resFlags);
+    printf("bufferRes device-local: %s\n", (resFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? "yes" : "no");
+
     for (int run = 0; run < runs; run++)
     {
         // Clear the result and make that CPU write visible to the GPU
         dataRes[0] = 0;
         VK_CHECK(vmaFlushAllocation(allocator, allocationRes, 0, VK_WHOLE_SIZE));
 
+        // Still signaled from the upload on run 0, from the previous run after that
         VK_CHECK(vkResetFences(device, 1, &fence));
 
         // Same command buffer every time
@@ -560,7 +601,7 @@ int main(int argc, char** argv)
 
     vkDestroyFence(device, fence, nullptr);
 
-    vkDestroyCommandPool(device, commandPool, nullptr);
+    vkDestroyCommandPool(device, commandPool, nullptr); // frees both command buffers
 
     vkDestroyDescriptorPool(device, descriptorPool, nullptr);
 
@@ -569,6 +610,8 @@ int main(int argc, char** argv)
     vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 
     vkDestroyDescriptorSetLayout(device, setLayout, nullptr);
+
+    //vmaDestroyBuffer(allocator, bufferResDev, allocationResDev);
 
     vmaDestroyBuffer(allocator, bufferIn, allocationIn);
 
