@@ -20,7 +20,7 @@
         }                                                                   \
     } while (0)
 
-#include "reduce_spv.h"     // generated from hello.hlsl by DXC at build time
+#include "reduce_spv.h"     // generated from reduce.hlsl by DXC at build time
 
 int main(int argc, char** argv)
 {
@@ -244,7 +244,9 @@ int main(int argc, char** argv)
 
     VkBufferCreateInfo bufferInfoRes = {};
     bufferInfoRes.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfoRes.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    bufferInfoRes.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+                        | VK_BUFFER_USAGE_TRANSFER_DST_BIT   // vkCmdFillBuffer writes it
+                        | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;  // copied into the readback buffer
     bufferInfoRes.size = sizeof(uint32_t);
 
     VkBufferCreateInfo bufferInfoStaging = {};
@@ -258,30 +260,41 @@ int main(int argc, char** argv)
 
     // creating the buffers and allocating memory in one shot
     VK_CHECK(vmaCreateBuffer(allocator, &bufferInfoIn, &allocCreateInfoDevice, &bufferIn, &allocationIn, &allocationInfoIn));
-    VK_CHECK(vmaCreateBuffer(allocator, &bufferInfoRes, &allocCreateInfo, &bufferRes, &allocationRes, &allocationInfoRes));
+    VK_CHECK(vmaCreateBuffer(allocator, &bufferInfoRes, &allocCreateInfoDevice, &bufferRes, &allocationRes, &allocationInfoRes));
     VK_CHECK(vmaCreateBuffer(allocator, &bufferInfoStaging, &allocCreateInfoStaging, &bufferStaging, &allocationStaging, &allocationInfoStaging));
+
+    VkBufferCreateInfo bufferInfoReadback = {};
+    bufferInfoReadback.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfoReadback.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bufferInfoReadback.size = sizeof(uint32_t);
+
+    VkBuffer bufferReadback;
+    VmaAllocation allocationReadback;
+    VmaAllocationInfo allocationInfoReadback;
+    VK_CHECK(vmaCreateBuffer(allocator, &bufferInfoReadback, &allocCreateInfo,
+                             &bufferReadback, &allocationReadback, &allocationInfoReadback));
 
     // accessing the data
 
     void* cpuDataIn = allocationInfoStaging.pMappedData; // previously was allocationInfoIn
     uint32_t* dataIn = static_cast<uint32_t*>(cpuDataIn);
-    void* cpuDataRes = allocationInfoRes.pMappedData;
+    void* cpuDataRes = allocationInfoReadback.pMappedData;
     uint32_t* dataRes = static_cast<uint32_t*>(cpuDataRes);
-    dataRes[0] = 0;
     uint32_t dataExpected = 0;
+
+    uint32_t elem = 1;
 
     for (uint32_t i = 0; i < N; i++)
     {
-        dataIn[i] = i; // 1 or i or whatever
-        dataExpected += dataIn[i];
+        elem = i; // or comment to be 1 or whatever
+        dataIn[i] = elem;
+        dataExpected += elem;
     }
 
     // Flush makes CPU writes visible to the GPU
     VK_CHECK(vmaFlushAllocation(allocator, allocationStaging, 0, VK_WHOLE_SIZE));
-    VK_CHECK(vmaFlushAllocation(allocator, allocationRes, 0, VK_WHOLE_SIZE));
 
-    printf("dataIn[0]: 0x%x\n", dataIn[0]);
-    printf("dataRes[0]: 0x%x\n", dataRes[0]);
+    printf("dataIn[0]: 0x%x\n", dataIn[0]); // this breaks the SEQUENTIAL_WRITE promise but it's one read it's fineeeeeeeeeeeeeeeeeeeeeeeee
 
     // shader, pipeline, descriptors
 
@@ -289,7 +302,7 @@ int main(int argc, char** argv)
     // call vkCreate..., and Vulkan hands back a handle. I never fill a
     // handle in myself.
 
-    // also check hello.hlsl
+    // also check reduce.hlsl
 
     // Shader module: the compiled shader code, handed to the driver.
     VkShaderModuleCreateInfo shaderModuleCreateInfo = {};
@@ -330,7 +343,7 @@ int main(int argc, char** argv)
 
     // Pipeline layout: which set layouts the pipeline uses.
     // Position in pSetLayouts = set number, so this one is set 0,
-    // matching register(u0) in hello.hlsl.
+    // matching register(u0) in reduce.hlsl.
     VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
     pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutCreateInfo.setLayoutCount = 1;
@@ -424,11 +437,6 @@ int main(int argc, char** argv)
         }
     };
 
-    // VkBuffer bufferResDev; VmaAllocation allocationResDev;
-    // VK_CHECK(vmaCreateBuffer(allocator, &bufferInfoRes, &allocCreateInfoDevice,
-    //                          &bufferResDev, &allocationResDev, nullptr));
-    // descriptorBufferInfo[1].buffer = bufferResDev;
-
     vkUpdateDescriptorSets(device, 2, &descriptorWrite[0], 0, nullptr); // 1 write, 0 copies
     printf("Descriptor set points at the buffer\n");
 
@@ -517,6 +525,8 @@ int main(int argc, char** argv)
 
     vkCmdResetQueryPool(commandBuffer, queryPool, 0, 2);
 
+    vkCmdFillBuffer(commandBuffer, bufferRes, 0, sizeof(uint32_t), 0); // dstOffset, size, data
+
     // The copy is in another submission now, but submission order runs across
     // command buffers and vkQueueSubmit calls on the same queue. So this
     // barrier's first scope ("earlier in submission order") still reaches back
@@ -524,7 +534,7 @@ int main(int argc, char** argv)
     VkMemoryBarrier copyToShader = {};
     copyToShader.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
     copyToShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    copyToShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    copyToShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
     vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          0, 1, &copyToShader, 0, nullptr, 0, nullptr);
 
@@ -538,14 +548,22 @@ int main(int argc, char** argv)
     vkCmdDispatch(commandBuffer, (N + 255) / 256, 1, 1);
     vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, 1);
 
+    VkMemoryBarrier shaderToCopy = {};
+    shaderToCopy.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    shaderToCopy.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    shaderToCopy.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 1, &shaderToCopy, 0, nullptr, 0, nullptr);
 
-    VkMemoryBarrier memoryBarrier = {};
-    memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-    memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    memoryBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    VkBufferCopy readbackRegion = {0, 0, sizeof(uint32_t)};
+    vkCmdCopyBuffer(commandBuffer, bufferRes, bufferReadback, 1, &readbackRegion);
 
-    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1,
-                         &memoryBarrier, 0, nullptr, 0, nullptr); // whole lotta parameters
+    VkMemoryBarrier copyToHost = {};
+    copyToHost.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    copyToHost.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    copyToHost.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                         0, 1, &copyToHost, 0, nullptr, 0, nullptr);
 
     VK_CHECK(vkEndCommandBuffer(commandBuffer));
 
@@ -566,9 +584,9 @@ int main(int argc, char** argv)
 
     for (int run = 0; run < runs; run++)
     {
-        // Clear the result and make that CPU write visible to the GPU
+        // Sentinel: if this run's copy never lands, the check reads 0, not the last run's sum
         dataRes[0] = 0;
-        VK_CHECK(vmaFlushAllocation(allocator, allocationRes, 0, VK_WHOLE_SIZE));
+        VK_CHECK(vmaFlushAllocation(allocator, allocationReadback, 0, VK_WHOLE_SIZE));
 
         // Still signaled from the upload on run 0, from the previous run after that
         VK_CHECK(vkResetFences(device, 1, &fence));
@@ -578,7 +596,7 @@ int main(int argc, char** argv)
         VK_CHECK(vkWaitForFences(device, 1, &fence, VK_TRUE, 5000000000)); // nanoseconds xd
 
         // Make the GPU's write visible to the CPU, then check
-        VK_CHECK(vmaInvalidateAllocation(allocator, allocationRes, 0, sizeof(uint32_t)));
+        VK_CHECK(vmaInvalidateAllocation(allocator, allocationReadback, 0, sizeof(uint32_t)));
         const bool runOk = (dataExpected == dataRes[0]);
         ok = ok && runOk;
 
@@ -611,11 +629,11 @@ int main(int argc, char** argv)
 
     vkDestroyDescriptorSetLayout(device, setLayout, nullptr);
 
-    //vmaDestroyBuffer(allocator, bufferResDev, allocationResDev);
-
     vmaDestroyBuffer(allocator, bufferIn, allocationIn);
 
     vmaDestroyBuffer(allocator, bufferRes, allocationRes);
+
+    vmaDestroyBuffer(allocator, bufferReadback, allocationReadback);
 
     vmaDestroyBuffer(allocator, bufferStaging, allocationStaging);
 
