@@ -51,6 +51,18 @@ FetchContent_Declare(vma
 )
 FetchContent_MakeAvailable(volk vma)
 
+# libsais 2.12.2 (Apache-2.0): BWT for test inputs, CPU only.
+# Download only; libsais's own CMakeLists asks for CMake 3.10, too old for our
+# static-runtime setting to apply there, so libsais.c is built in our own target.
+FetchContent_Declare(libsais
+        URL https://github.com/IlyaGrebnov/libsais/archive/refs/tags/v2.12.2.tar.gz
+        URL_HASH SHA256=9a3ab90beb94ef4d9cf633f39f3d45fe355401dcffcda067a4e330895afc20d7
+        SOURCE_SUBDIR do-not-add   # no CMakeLists.txt there, so libsais's own one is never added
+)
+FetchContent_MakeAvailable(libsais)
+add_library(libsais STATIC ${libsais_SOURCE_DIR}/src/libsais.c)
+target_include_directories(libsais PUBLIC ${libsais_SOURCE_DIR}/include)
+
 # One target that bundles volk + VMA, including VMA's single implementation
 # file. Every app links this instead of linking volk and VMA separately.
 add_library(vkdeps STATIC src/vma_impl.cpp)
@@ -97,3 +109,5 @@ endfunction()
 # ---------------------------------------------------------------------------
 add_subdirectory(apps/hello)
 add_subdirectory(apps/reduce)
+add_subdirectory(src/mtf)
+add_subdirectory(apps/mtf_cpu)
