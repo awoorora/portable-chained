@@ -77,8 +77,7 @@ bool loadFile(const char* path, std::vector<uint8_t>& out)
     const std::streamoff size = file.tellg();
     if (size < 0 || uint64_t(size) > kMaxInputBytes)
     {
-        std::fprintf(stderr, "\"%s\" is %lld bytes; the limit is %zu (2^30)\n", path, (long long)size,
-                     kMaxInputBytes);
+        std::fprintf(stderr, "\"%s\" is %lld bytes; the limit is %zu\n", path, (long long)size, kMaxInputBytes);
         return false;
     }
     out.resize(size_t(size));
@@ -95,7 +94,7 @@ std::vector<uint8_t> bwt(const std::vector<uint8_t>& text, int32_t& primaryIndex
 {
     if (text.size() > kMaxInputBytes)
     {
-        std::fprintf(stderr, "bwt: input of %zu bytes is over the 2^30 limit\n", text.size());
+        std::fprintf(stderr, "bwt: input of %zu bytes is over the %zu-byte limit\n", text.size(), kMaxInputBytes);
         std::exit(1);
     }
     const int32_t n = int32_t(text.size());

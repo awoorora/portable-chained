@@ -3,13 +3,19 @@
 // laptop) builds exactly the same bytes for the same name.
 #pragma once
 
+#include "word_encoding.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
 
-// The per-symbol state stores a 30-bit position, so inputs must stay at or below 2^30 bytes.
-constexpr size_t kMaxInputBytes = size_t(1) << 30;
+// The largest input whose last position still gets a word that fits the 30-bit payload.
+// Positions map to consecutive words starting at seenAt(0), so seenAt(n - 1) <= kMaxWord
+// gives n <= kMaxWord - seenAt(0) + 1. Derived from seenAt, so it follows any change
+// to the encoding.
+constexpr size_t kMaxInputBytes = size_t(kMaxWord - seenAt(0)) + 1;
+static_assert(seenAt(kMaxInputBytes - 1) == kMaxWord, "the last position's word must be the largest that fits");
 
 struct Input
 {
