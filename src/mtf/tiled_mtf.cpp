@@ -65,10 +65,37 @@ void tiledMtf(const uint8_t* in, uint8_t* out, size_t n, size_t tileSize, DepthH
             std::copy(start, start + 256, startWords->begin() + t * 256);
         }
 
-        // TODO step 3: encode in[begin, end) into out[begin, end), using start[] and
-        //              the tile's own bytes only.
-        (void)depth;
-        (void)out;
-        (void)end;
+        // Step 3, part 1: the MTF list at the tile's start. The list is the symbols in
+        // order of their last use, most recent first, and a bigger word means more recent.
+        // No two symbols share a start word (distinct positions, distinct tile -1 words,
+        // and the two ranges don't overlap), so the order is strict and the list unique.
+        uint8_t list[256];
+        for (int s = 0; s < 256; s++)
+        {
+            list[s] = uint8_t(s);
+        }
+        std::sort(list, list + 256, [&](uint8_t x, uint8_t y) { return start[x] > start[y]; });
+
+        // Part 2: serial MTF over the tile's own bytes, from that list (as serial_mtf.cpp).
+        for (size_t i = begin; i < end; i++)
+        {
+            const uint8_t symbol = in[i];
+
+            int j = 0;
+            while (list[j] != symbol)
+            {
+                j++;
+            }
+            out[i] = uint8_t(j);
+
+            // Move to front: shift list[0..j-1] right by one, put the symbol at 0.
+            for (int k = j; k > 0; k--)
+            {
+                list[k] = list[k - 1];
+            }
+            list[0] = symbol;
+        }
+
+        (void)depth; // until step 4
     }
 }
