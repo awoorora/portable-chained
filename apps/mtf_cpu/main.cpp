@@ -293,9 +293,14 @@ static bool selfTests()
 // first tile that contains s. Its word is final, because every later position beats
 // every earlier one. If no tile does, tile -1's word, which is always final. Compares
 // that with tiledMtf's start words and reports the first difference.
+//
+// Step 4 rides along: the walk counts the tiles it reads (tile -1 included, when it
+// gets there) into its own histogram, which must equal the one tiledMtf records.
+// Step 5 too: per tile, the longest walk among the symbols present in the tile is the
+// encode's look-back, again into a histogram that must equal tiledMtf's.
 constexpr size_t kMaxWalkTiles = 1000;
 
-static bool startWordsMatchWalk(const char* name, const std::vector<uint8_t>& in, size_t tileSize)
+static bool matchesWalk(const char* name, const std::vector<uint8_t>& in, size_t tileSize)
 {
     const size_t tiles = (in.size() + tileSize - 1) / tileSize;
     std::vector<uint32_t> local(tiles * 256);
@@ -307,21 +312,46 @@ static bool startWordsMatchWalk(const char* name, const std::vector<uint8_t>& in
 
     std::vector<uint8_t> out(in.size(), 0xAB);
     std::vector<uint32_t> start;
-    tiledMtf(in.data(), out.data(), in.size(), tileSize, nullptr, &start);
+    DepthHistogram depth;
+    DepthHistogram encode;
+    tiledMtf(in.data(), out.data(), in.size(), tileSize, &depth, &start, &encode);
 
+    DepthHistogram walk;
+    DepthHistogram walkEncode;
     for (size_t t = 0; t < tiles; t++)
     {
+        uint64_t encodeRead = 0;   // longest walk among the symbols present in tile t
+        bool encodeStart = false; // one of them reached tile -1
         for (int s = 0; s < 256; s++)
         {
             uint32_t want = initialWord(s);
+            uint64_t tilesRead = 0;
+            bool found = false;
             for (size_t u = t; u-- > 0;) // u = t - 1 down to 0
             {
+                tilesRead++;
                 if (local[u * 256 + s] != kNotSeen)
                 {
                     want = local[u * 256 + s];
+                    found = true;
                     break;
                 }
             }
+            if (found)
+            {
+                walk.record(tilesRead);
+            }
+            else
+            {
+                walk.recordStart(tilesRead + 1); // then it reads tile -1
+            }
+            if (local[t * 256 + s] != kNotSeen)
+            {
+                walk.notePresent();
+                encodeRead = std::max(encodeRead, found ? tilesRead : tilesRead + 1);
+                encodeStart = encodeStart || !found;
+            }
+
             if (start[t * 256 + s] != want)
             {
                 printf("FAIL step 2: %s, tile size %zu: tile %zu, symbol %d: start word %u, the walk gives %u\n",
@@ -329,6 +359,36 @@ static bool startWordsMatchWalk(const char* name, const std::vector<uint8_t>& in
                 return false;
             }
         }
+        if (encodeStart)
+        {
+            walkEncode.recordStart(encodeRead);
+        }
+        else
+        {
+            walkEncode.record(encodeRead);
+        }
+    }
+
+    if (!(encode == walkEncode))
+    {
+        printf("FAIL step 5: %s, tile size %zu: encode depths differ from the walk's: start tiles %llu vs %llu, "
+               "steps %llu vs %llu, max found %llu vs %llu\n",
+               name, tileSize, (unsigned long long)encode.start, (unsigned long long)walkEncode.start,
+               (unsigned long long)(encode.sumFound + encode.sumStartWalk),
+               (unsigned long long)(walkEncode.sumFound + walkEncode.sumStartWalk),
+               (unsigned long long)encode.maxFound, (unsigned long long)walkEncode.maxFound);
+        return false;
+    }
+
+    if (!(depth == walk))
+    {
+        printf("FAIL step 4: %s, tile size %zu: depths differ from the walk's: start %llu vs %llu, "
+               "steps %llu vs %llu, present %llu vs %llu\n",
+               name, tileSize, (unsigned long long)depth.start, (unsigned long long)walk.start,
+               (unsigned long long)(depth.sumFound + depth.sumStartWalk),
+               (unsigned long long)(walk.sumFound + walk.sumStartWalk), (unsigned long long)depth.present,
+               (unsigned long long)walk.present);
+        return false;
     }
     return true;
 }
@@ -392,8 +452,9 @@ static bool tiledSelfTests()
     };
     const size_t tileSizes[] = {1, 2, 3, 7, 255, 256, 300, 1024, 6000};
 
-    // Step 2 check. tiledMtf's start words must equal the literal look-back, the one the
-    // GPU does. The walk is quadratic, so it skips runs with more than kMaxWalkTiles tiles.
+    // Steps 2, 4 and 5 check. tiledMtf's start words and both depths must equal the literal
+    // look-back, the one the GPU does. The walk is quadratic, so it skips runs with more
+    // than kMaxWalkTiles tiles.
     {
         for (const Small& input : small)
         {
@@ -406,7 +467,7 @@ static bool tiledSelfTests()
                     continue;
                 }
                 runs++;
-                if (!startWordsMatchWalk(input.name, input.bytes, tileSize))
+                if (!matchesWalk(input.name, input.bytes, tileSize))
                 {
                     inputOk = false;
                     break; // the first failing tile size is enough
@@ -414,8 +475,8 @@ static bool tiledSelfTests()
             }
             if (inputOk)
             {
-                printf("PASS step 2: %s, start words equal the literal look-back (%d tile sizes)\n", input.name,
-                       runs);
+                printf("PASS steps 2, 4, 5: %s, start words and depths equal the literal look-back (%d tile sizes)\n",
+                       input.name, runs);
             }
             ok = ok && inputOk;
         }
@@ -524,8 +585,9 @@ int main(int argc, char** argv)
     }
 
     // The tiled model over every input and tile size. "found" counts the (tile, symbol)
-    // pairs whose look-back found an earlier tile containing the symbol (or the tile
-    // itself); "steps" averages tiles walked over all pairs, "start" ones included.
+    // pairs whose look-back found an earlier tile containing the symbol; "steps" averages
+    // tiles read over all pairs, "start" ones included (tiles t-1..0 plus tile -1, t + 1).
+    // "present" is the share of pairs whose symbol is in the tile itself.
     FILE* csv = nullptr;
     if (opt.csvPath != nullptr)
     {
@@ -543,7 +605,8 @@ int main(int argc, char** argv)
         const char* name;
         size_t tileSize;
         size_t tiles;
-        DepthHistogram depth;
+        DepthHistogram depth;       // per (tile, symbol): what the full start state costs
+        DepthHistogram encodeDepth; // per tile: what the tile's own outputs need
     };
     std::vector<Run> runs;
 
@@ -555,11 +618,11 @@ int main(int argc, char** argv)
         const Input& input = inputs[k];
         for (size_t tileSize : opt.tileSizes)
         {
-            Run run{input.name.c_str(), tileSize, (input.bytes.size() + tileSize - 1) / tileSize, {}};
+            Run run{input.name.c_str(), tileSize, (input.bytes.size() + tileSize - 1) / tileSize, {}, {}};
 
             std::vector<uint8_t> out(input.bytes.size(), 0xAB); // poisoned
             const auto t0 = std::chrono::steady_clock::now();
-            tiledMtf(input.bytes.data(), out.data(), out.size(), tileSize, &run.depth);
+            tiledMtf(input.bytes.data(), out.data(), out.size(), tileSize, &run.depth, nullptr, &run.encodeDepth);
             const double ms =
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 
@@ -581,10 +644,27 @@ int main(int argc, char** argv)
 
             if (csv != nullptr)
             {
-                writeDepthCsvRows(csv, run.name, input.bytes.size(), tileSize, run.tiles, run.depth);
+                writeDepthCsvRows(csv, run.name, input.bytes.size(), tileSize, run.tiles, "symbol", run.depth);
+                writeDepthCsvRows(csv, run.name, input.bytes.size(), tileSize, run.tiles, "encode", run.encodeDepth);
             }
             runs.push_back(run);
         }
+    }
+
+    // Step 5: per tile, how far back the encode has to look, next to what the full start
+    // state costs per symbol ("mean steps" above). "start tiles" are tiles whose encode
+    // needs everything back to tile -1.
+    printf("\nEncode look-back per tile\n");
+    printf("%-16s %6s %9s %8s %8s %8s %8s %12s %10s %10s\n", "input", "tile", "tiles", "<= 1", "<= 4", "<= 16",
+           "<= 256", "start tiles", "mean", "max found");
+    for (const Run& run : runs)
+    {
+        const DepthHistogram& e = run.encodeDepth;
+        const double total = e.total != 0 ? double(e.total) : 1.0;
+        printf("%-16s %6zu %9zu %7.2f%% %7.2f%% %7.2f%% %7.2f%% %12llu %10.2f %10llu\n", run.name, run.tileSize,
+               run.tiles, 100.0 * fractionAtMost(e, 1), 100.0 * fractionAtMost(e, 4), 100.0 * fractionAtMost(e, 16),
+               100.0 * fractionAtMost(e, 256), (unsigned long long)e.start, double(e.sumFound + e.sumStartWalk) / total,
+               (unsigned long long)e.maxFound);
     }
 
     if (csv != nullptr)
@@ -597,7 +677,8 @@ int main(int argc, char** argv)
     {
         for (const Run& run : runs)
         {
-            printDepthHistogram(run.name, run.tileSize, run.tiles, run.depth);
+            printDepthHistogram(run.name, run.tileSize, run.tiles, "per symbol", run.depth);
+            printDepthHistogram(run.name, run.tileSize, run.tiles, "encode, per tile", run.encodeDepth);
         }
     }
 

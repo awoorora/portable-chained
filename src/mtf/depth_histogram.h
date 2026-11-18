@@ -27,15 +27,18 @@ struct DepthHistogram
     uint64_t maxFound = 0;     // largest distance among the found ones
     uint64_t present = 0;      // pairs whose symbol is in the tile itself (not part of total)
 
-    // The symbol was found `distance` tiles back (0: in the tile itself).
+    // The symbol was found `distance` tiles back (1: the previous tile).
     void record(uint64_t distance);
 
     // No earlier tile contains the symbol; the look-back walked `tilesWalked` tiles
-    // before it got to the start.
+    // before it got to the start. tiledMtf counts tile -1 as one of them (t + 1).
     void recordStart(uint64_t tilesWalked);
 
     // The symbol is in the tile itself. Call it in addition to record or recordStart.
     void notePresent();
+
+    // Every field equal: used to check tiledMtf's depths against the literal walk's.
+    bool operator==(const DepthHistogram&) const = default;
 
     // Bucket b holds the distances lo..hi.
     static int bucketOf(uint64_t distance);
@@ -43,13 +46,18 @@ struct DepthHistogram
 };
 
 // One block per histogram: a line per bucket from the first to the last non-empty one,
-// then "start", then the share of pairs present in their own tile.
-void printDepthHistogram(const char* input, size_t tileSize, size_t tiles, const DepthHistogram& h);
+// then "start", then (if any were noted) the share present in their own tile. `kind`
+// names what was recorded, e.g. "per symbol" or "encode, per tile".
+void printDepthHistogram(const char* input, size_t tileSize, size_t tiles, const char* kind, const DepthHistogram& h);
+
+// Share of the recorded values (start included in the total) that are at most `distance`.
+double fractionAtMost(const DepthHistogram& h, uint64_t distance);
 
 // Long-format CSV for the plot scripts: one row per non-empty bucket.
-//   input,bytes,tile_size,tiles,bucket,lo,hi,count
+//   input,bytes,tile_size,tiles,kind,bucket,lo,hi,count
+// kind is "symbol" (one value per tile and symbol) or "encode" (one value per tile).
 // "start" and "present" rows have bucket = start or present and empty lo and hi.
-// "present" counts are not part of the distance total.
+// "present" counts are not part of the distance total, and only written if nonzero.
 void writeDepthCsvHeader(FILE* f);
-void writeDepthCsvRows(FILE* f, const char* input, size_t bytes, size_t tileSize, size_t tiles,
+void writeDepthCsvRows(FILE* f, const char* input, size_t bytes, size_t tileSize, size_t tiles, const char* kind,
                        const DepthHistogram& h);

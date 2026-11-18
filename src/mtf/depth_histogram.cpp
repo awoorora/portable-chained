@@ -61,9 +61,9 @@ static void rangeLabel(int bucket, char* label, size_t size)
     }
 }
 
-void printDepthHistogram(const char* input, size_t tileSize, size_t tiles, const DepthHistogram& h)
+void printDepthHistogram(const char* input, size_t tileSize, size_t tiles, const char* kind, const DepthHistogram& h)
 {
-    printf("\n%s, tile %zu B: %zu tiles, %llu (tile, symbol) pairs recorded\n", input, tileSize, tiles,
+    printf("\n%s, tile %zu B, %s: %zu tiles, %llu values recorded\n", input, tileSize, kind, tiles,
            (unsigned long long)h.total);
     if (h.total == 0)
     {
@@ -95,16 +95,38 @@ void printDepthHistogram(const char* input, size_t tileSize, size_t tiles, const
     cumulative += h.start;
     printf("  %-15s %14llu %8.3f %8.3f\n", "start", (unsigned long long)h.start, 100.0 * double(h.start) / total,
            100.0 * double(cumulative) / total);
-    printf("  %-15s %14llu %8.3f   (in their own tile; not part of the total)\n", "present",
-           (unsigned long long)h.present, 100.0 * double(h.present) / total);
+    if (h.present != 0)
+    {
+        printf("  %-15s %14llu %8.3f   (in their own tile; not part of the total)\n", "present",
+               (unsigned long long)h.present, 100.0 * double(h.present) / total);
+    }
+}
+
+double fractionAtMost(const DepthHistogram& h, uint64_t distance)
+{
+    if (h.total == 0)
+    {
+        return 0.0;
+    }
+    uint64_t count = 0;
+    for (int b = 0; b < DepthHistogram::kBuckets; b++)
+    {
+        uint64_t lo, hi;
+        DepthHistogram::bucketRange(b, lo, hi);
+        if (hi <= distance)
+        {
+            count += h.counts[b];
+        }
+    }
+    return double(count) / double(h.total);
 }
 
 void writeDepthCsvHeader(FILE* f)
 {
-    fprintf(f, "input,bytes,tile_size,tiles,bucket,lo,hi,count\n");
+    fprintf(f, "input,bytes,tile_size,tiles,kind,bucket,lo,hi,count\n");
 }
 
-void writeDepthCsvRows(FILE* f, const char* input, size_t bytes, size_t tileSize, size_t tiles,
+void writeDepthCsvRows(FILE* f, const char* input, size_t bytes, size_t tileSize, size_t tiles, const char* kind,
                        const DepthHistogram& h)
 {
     for (int b = 0; b < DepthHistogram::kBuckets; b++)
@@ -117,12 +139,17 @@ void writeDepthCsvRows(FILE* f, const char* input, size_t bytes, size_t tileSize
         rangeLabel(b, label, sizeof(label));
         uint64_t lo, hi;
         DepthHistogram::bucketRange(b, lo, hi);
-        fprintf(f, "%s,%zu,%zu,%zu,%s,%llu,%llu,%llu\n", input, bytes, tileSize, tiles, label,
+        fprintf(f, "%s,%zu,%zu,%zu,%s,%s,%llu,%llu,%llu\n", input, bytes, tileSize, tiles, kind, label,
                 (unsigned long long)lo, (unsigned long long)hi, (unsigned long long)h.counts[b]);
     }
     if (h.start != 0)
     {
-        fprintf(f, "%s,%zu,%zu,%zu,start,,,%llu\n", input, bytes, tileSize, tiles, (unsigned long long)h.start);
+        fprintf(f, "%s,%zu,%zu,%zu,%s,start,,,%llu\n", input, bytes, tileSize, tiles, kind,
+                (unsigned long long)h.start);
     }
-    fprintf(f, "%s,%zu,%zu,%zu,present,,,%llu\n", input, bytes, tileSize, tiles, (unsigned long long)h.present);
+    if (h.present != 0)
+    {
+        fprintf(f, "%s,%zu,%zu,%zu,%s,present,,,%llu\n", input, bytes, tileSize, tiles, kind,
+                (unsigned long long)h.present);
+    }
 }

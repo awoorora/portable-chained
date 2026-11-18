@@ -16,8 +16,10 @@
 // checked against.
 void tileLastSeen(const uint8_t* in, size_t begin, size_t end, uint32_t* words);
 
-// Steps 2-4. Writes out[0, n). If depth is not null, records one look-back distance
+// Steps 2-5. Writes out[0, n). If depth is not null, records one look-back distance
 // per (tile, symbol). If startWords is not null, it is resized to tiles * 256 and
 // receives each tile's start state (step 2), for checks and for the GPU comparison.
+// If encodeDepth is not null, records one value per tile: how far back the tile has
+// to look to produce its own outputs (step 5).
 void tiledMtf(const uint8_t* in, uint8_t* out, size_t n, size_t tileSize, DepthHistogram* depth = nullptr,
-              std::vector<uint32_t>* startWords = nullptr);
+              std::vector<uint32_t>* startWords = nullptr, DepthHistogram* encodeDepth = nullptr);
